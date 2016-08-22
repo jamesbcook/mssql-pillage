@@ -107,7 +107,6 @@ func main() {
 	if fo.Server != "" {
 		servers = append(servers, fo.Server)
 	}
-	//server := fo.Server
 	port := 1433
 	if fo.InputFile != "" {
 		servers = getServers(fo.InputFile)
@@ -117,9 +116,14 @@ func main() {
 			continue
 		}
 		if fo.Domain != "" {
-			connString = fmt.Sprintf("server=%s;user id=%s\\%s;password=%s;port=%d", server, fo.Domain, fo.User, fo.Password, port)
+			/*
+			* ApplicationIntent doesn't look like it affects anything and
+			* it is needed for some databases that expect the setting.
+			* It also helpes us confirm we request readonly rights.
+			 */
+			connString = fmt.Sprintf("server=%s;user id=%s\\%s;password=%s;port=%d;ApplicationIntent=ReadOnly", server, fo.Domain, fo.User, fo.Password, port)
 		} else {
-			connString = fmt.Sprintf("server=%s;user id=%s;password=%s;port=%d", server, fo.User, fo.Password, port)
+			connString = fmt.Sprintf("server=%s;user id=%s;password=%s;port=%d;ApplicationIntent=ReadOnly", server, fo.User, fo.Password, port)
 		}
 		/*
 			if fo.Database == "" {
@@ -130,8 +134,7 @@ func main() {
 		*/
 		conn, err := connect(connString)
 		if err != nil {
-			//log.Fatal("Open connection failed:", err.Error())
-			log.Println("Open connection failed:", err.Error())
+			log.Println("Open connection failed:", err)
 			continue
 		}
 		defer conn.Close()
@@ -151,24 +154,24 @@ func main() {
 			log.Println("listdb error", err)
 			continue
 		}
-		//results := make(map[string][]string)
 		results := make(map[string][]ColumnNames)
 		for _, dbName := range allDB {
 			fmt.Println("Query Database", dbName)
 			res, err := databaseEnum(conn, dbName)
 			if err != nil {
-				log.Println(err)
+				log.Println("Database Enum error:", err)
+				continue
 			}
 			for _, x := range res {
 				search2 := `select count(*) from `
-				search2 += fmt.Sprintf("%s.%s.%s", dbName, x.TableSchema, x.TableName)
+				search2 += fmt.Sprintf("[%s].[%s].[%s]", dbName, x.TableSchema, x.TableName)
 				rowCount, err := getTableCount(conn, search2)
 				if err != nil {
-					log.Println(err)
+					log.Println("Get Table Count error", err)
 					continue
 				}
+				// Need to add a flag for row count
 				if rowCount == 0 {
-					//results[dbName] = res
 					continue
 				}
 				x.RowCount = rowCount
@@ -178,7 +181,7 @@ func main() {
 		}
 		f, err := os.Create(server)
 		if err != nil {
-			log.Println("file creaet error", err)
+			log.Println("file create error", err)
 			continue
 		}
 		f.WriteString(fmt.Sprintf("%s\n", columnNames))
@@ -187,8 +190,6 @@ func main() {
 			for _, row := range rows {
 				f.WriteString(fmt.Sprintf("%s %s %s %s %s %d\n", dbName, row.TableCatalog, row.TableSchema, row.TableName, row.ColumnName, row.RowCount))
 				fmt.Println(dbName, row.TableCatalog, row.TableSchema, row.TableName, row.ColumnName, row.RowCount)
-				// f.WriteString(fmt.Sprintf("%s %s\n", dbName, row))
-				// fmt.Println(dbName, row)
 			}
 		}
 	}
@@ -247,7 +248,6 @@ func databaseEnum(db *sql.DB, dbName string) ([]ColumnNames, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	//res := []string{}
 	var res []ColumnNames
 	for rows.Next() {
 		tmp := &ColumnNames{}
@@ -264,11 +264,8 @@ func databaseEnum(db *sql.DB, dbName string) ([]ColumnNames, error) {
 		tmp.TableName = tableName
 		tmp.ColumnName = columnName
 		res = append(res, *tmp)
-		// resString := fmt.Sprintf("%s %s %s %s", catalog, schema, tableName, columnName)
-		// res = append(res, resString)
 	}
 	return res, nil
-	// return res, nil
 }
 
 func getTableCount(db *sql.DB, query string) (int, error) {
