@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -8,8 +9,8 @@ import (
 	"log"
 	"os"
 	"strings"
-	"time"
 
+	"github.com/b00stfr3ak/print"
 	_ "github.com/denisenkom/go-mssqldb"
 )
 
@@ -25,17 +26,17 @@ const (
 
 //FlagOptions set at startup
 type FlagOptions struct {
-	Server      string
-	InputFile   string
-	OutPut      string
-	CustomQuery string
-	Database    string
-	User        string
-	Domain      string
-	Password    string
-	Port        int
-	Threads     int
-	Verbose     bool
+	Host      string
+	InputFile string
+	OutPut    string
+	User      string
+	Domain    string
+	Password  string
+	Port      int
+	Threads   int
+	TimeOut   int
+	RowCount  uint64
+	Verbose   bool
 }
 
 //ColumnNames from an all database query
@@ -44,29 +45,24 @@ type ColumnNames struct {
 	TableSchema  string
 	TableName    string
 	ColumnName   string
-	RowCount     int
-}
-
-//App storage
-type App struct {
-	db *sql.DB
+	RowCount     uint64
 }
 
 func flagSetup() *FlagOptions {
-	server := flag.String("server", "", "MSSQL server to connect to")
+	host := flag.String("host", "", "MSSQL server to connect to")
 	inputFile := flag.String("inputFile", "", "MSSQL servers to connect to")
 	outPut := flag.String("output", "mssql-pillage-output", "Directory to write results to")
-	customQuery := flag.String("query", "", "Custom query to be sent to the server")
-	database := flag.String("database", "", "Database to connect to")
-	port := flag.Int("port", 1443, "Port MSSQL is on")
+	port := flag.Int("port", 1433, "Port MSSQL is on")
 	user := flag.String("user", "", "Username to authenticate as")
 	domain := flag.String("domain", "", "Domain to use")
 	pass := flag.String("pass", "", "Password for user")
 	threads := flag.Int("threads", 1, "Number of threads to use")
+	timeOut := flag.Int("timeOut", 30, "Database Time Out")
+	rowCount := flag.Uint64("rowCount", 0, "Number of rows the table must exceed before reporting")
 	verbose := flag.Bool("v", false, "Verbose output")
 	flag.Parse()
-	return &FlagOptions{Server: *server, InputFile: *inputFile, OutPut: *outPut,
-		Database: *database, Port: *port, User: *user, CustomQuery: *customQuery,
+	return &FlagOptions{Host: *host, InputFile: *inputFile, OutPut: *outPut,
+		Port: *port, User: *user, TimeOut: *timeOut, RowCount: *rowCount,
 		Domain: *domain, Password: *pass, Threads: *threads, Verbose: *verbose}
 }
 
@@ -81,38 +77,48 @@ func getServers(inputFile string) []string {
 func readyDir(dir string) {
 	err := os.Mkdir(dir, 0775)
 	if err != nil {
-		log.Fatal("mkdir", err)
+		//fmt.Printf("%s Exists, would you like to remove it? ", dir)
+		print.Warningf("%s Exists, would you like to remove it? ", dir)
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		if strings.ToLower(string([]byte(input)[0])) == "y" {
+			os.RemoveAll(dir)
+			err = os.Mkdir(dir, 0775)
+			if err != nil {
+				print.Badln(err)
+			}
+		} else {
+			print.Badln(err)
+		}
 	}
 	err = os.Chdir(dir)
 	if err != nil {
-		log.Fatal("chdir", err)
+		print.Badln(err)
 	}
 }
 
 func main() {
 	fo := flagSetup()
-	if fo.Server == "" && fo.InputFile == "" {
-		log.Fatal("Need server or Input File")
+	if fo.Host == "" && fo.InputFile == "" {
+		print.Badln("Need server or Input File")
 	}
 	var connString string
-	//var database string
-	var servers []string
+	var hosts []string
 	var dir string
+	if fo.Host != "" {
+		hosts = append(hosts, fo.Host)
+	}
+	if fo.InputFile != "" {
+		hosts = getServers(fo.InputFile)
+	}
 	if fo.OutPut != "" {
 		dir = fo.OutPut
 	} else {
 		dir = "mssql-pillage-output"
 	}
 	readyDir(dir)
-	if fo.Server != "" {
-		servers = append(servers, fo.Server)
-	}
-	port := 1433
-	if fo.InputFile != "" {
-		servers = getServers(fo.InputFile)
-	}
-	for _, server := range servers {
-		if server == "" {
+	for _, host := range hosts {
+		if host == "" {
 			continue
 		}
 		if fo.Domain != "" {
@@ -121,57 +127,44 @@ func main() {
 			* it is needed for some databases that expect the setting.
 			* It also helpes us confirm we request readonly rights.
 			 */
-			connString = fmt.Sprintf("server=%s;user id=%s\\%s;password=%s;port=%d;ApplicationIntent=ReadOnly", server, fo.Domain, fo.User, fo.Password, port)
+			connString = fmt.Sprintf("server=%s;user id=%s\\%s;password=%s;port=%d;ApplicationIntent=ReadOnly;connection timeout=%d",
+				host, fo.Domain, fo.User, fo.Password, fo.Port, fo.TimeOut)
 		} else {
-			connString = fmt.Sprintf("server=%s;user id=%s;password=%s;port=%d;ApplicationIntent=ReadOnly", server, fo.User, fo.Password, port)
+			connString = fmt.Sprintf("server=%s;user id=%s;password=%s;port=%d;ApplicationIntent=ReadOnly;connection timeout=%d",
+				host, fo.User, fo.Password, fo.Port, fo.TimeOut)
 		}
-		/*
-			if fo.Database == "" {
-				connString = fmt.Sprintf("server=%s;user id=%s\\%s;password=%s;port=%d", server, domain, user, password, port)
-			} else {
-				connString = fmt.Sprintf("server=%s;user id=%s\\%s;password=%s;port=%d;database=%s", server, domain, user, password, port, database)
-			}
-		*/
 		conn, err := connect(connString)
 		if err != nil {
-			log.Println("Open connection failed:", err)
+			print.Warningln("Open connection failed:", err)
 			continue
 		}
 		defer conn.Close()
-		/*
-			if fo.CustomQuery != "" {
-				conn, err := connect(connString)
-				err = customExec(conn, fo.CustomQuery)
-				if err != nil {
-					log.Println(err)
-					os.Exit(1)
-				}
-				os.Exit(0)
-			}
-		*/
+		print.Goodln("Connected to Server", host)
 		allDB, err := listDB(conn)
 		if err != nil {
-			log.Println("listdb error", err)
+			print.Warningln("listdb error", err)
 			continue
 		}
 		results := make(map[string][]ColumnNames)
 		for _, dbName := range allDB {
-			fmt.Println("Query Database", dbName)
+			print.Statusln("Query Database", dbName)
 			res, err := databaseEnum(conn, dbName)
 			if err != nil {
-				log.Println("Database Enum error:", err)
+				print.Warningln("Database Enum error:", err)
 				continue
 			}
 			for _, x := range res {
+				if fo.Verbose {
+					print.Goodln(x.TableName)
+				}
 				search2 := `select count(*) from `
 				search2 += fmt.Sprintf("[%s].[%s].[%s]", dbName, x.TableSchema, x.TableName)
 				rowCount, err := getTableCount(conn, search2)
 				if err != nil {
-					log.Println("Get Table Count error", err)
+					print.Warningln("Get Table Count error", err)
 					continue
 				}
-				// Need to add a flag for row count
-				if rowCount == 0 {
+				if rowCount == uint64(0) || rowCount < fo.RowCount {
 					continue
 				}
 				x.RowCount = rowCount
@@ -179,17 +172,17 @@ func main() {
 			}
 
 		}
-		f, err := os.Create(server)
+		f, err := os.Create(host)
 		if err != nil {
-			log.Println("file create error", err)
+			print.Warningln("file create error", err)
 			continue
 		}
-		f.WriteString(fmt.Sprintf("%s\n", columnNames))
-		fmt.Println(columnNames)
 		for dbName, rows := range results {
 			for _, row := range rows {
 				f.WriteString(fmt.Sprintf("%s %s %s %s %s %d\n", dbName, row.TableCatalog, row.TableSchema, row.TableName, row.ColumnName, row.RowCount))
-				fmt.Println(dbName, row.TableCatalog, row.TableSchema, row.TableName, row.ColumnName, row.RowCount)
+				if fo.Verbose {
+					print.Goodln(dbName, row.TableCatalog, row.TableSchema, row.TableName, row.ColumnName, row.RowCount)
+				}
 			}
 		}
 	}
@@ -224,9 +217,9 @@ func listDB(db *sql.DB) ([]string, error) {
 
 func databaseEnum(db *sql.DB, dbName string) ([]ColumnNames, error) {
 	search := `
-	SELECT TOP 1000
-	TABLE_CATALOG, TABLE_SCHEMA,TABLE_NAME, COLUMN_NAME
-	`
+		SELECT TOP 1000
+		TABLE_CATALOG, TABLE_SCHEMA,TABLE_NAME, COLUMN_NAME
+		`
 	search += fmt.Sprintf("FROM %s.INFORMATION_SCHEMA.columns ", dbName)
 	search += `
 	WHERE LOWER(COLUMN_NAME) LIKE ('%pass%')
@@ -268,7 +261,7 @@ func databaseEnum(db *sql.DB, dbName string) ([]ColumnNames, error) {
 	return res, nil
 }
 
-func getTableCount(db *sql.DB, query string) (int, error) {
+func getTableCount(db *sql.DB, query string) (uint64, error) {
 	stmt, err := db.Prepare(query)
 	if err != nil {
 		return 0, err
@@ -276,72 +269,10 @@ func getTableCount(db *sql.DB, query string) (int, error) {
 	defer stmt.Close()
 	row := stmt.QueryRow()
 	defer stmt.Close()
-	var rowCount int
+	var rowCount uint64
 	err = row.Scan(&rowCount)
 	if err != nil {
 		return 0, err
 	}
 	return rowCount, nil
-}
-
-func customExec(db *sql.DB, query string) error {
-	rows, err := db.Query(query)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		return err
-	}
-	if cols == nil {
-		return nil
-	}
-	vals := make([]interface{}, len(cols))
-	for i := 0; i < len(cols); i++ {
-		vals[i] = new(interface{})
-		if i != 0 {
-			fmt.Print("\t")
-		}
-		fmt.Print(cols[i])
-	}
-	fmt.Println()
-	for rows.Next() {
-		err = rows.Scan(vals...)
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
-		for i := 0; i < len(vals); i++ {
-			if i != 0 {
-				fmt.Print("\t")
-			}
-			printValue(vals[i].(*interface{}))
-		}
-		fmt.Println()
-
-	}
-	if rows.Err() != nil {
-		return rows.Err()
-	}
-	return nil
-}
-
-func printValue(pval *interface{}) {
-	switch v := (*pval).(type) {
-	case nil:
-		fmt.Print("NULL")
-	case bool:
-		if v {
-			fmt.Print("1")
-		} else {
-			fmt.Print("0")
-		}
-	case []byte:
-		fmt.Print(string(v))
-	case time.Time:
-		fmt.Print(v.Format("2006-01-02 15:04:05.999"))
-	default:
-		fmt.Print(v)
-	}
 }
