@@ -31,8 +31,4 @@ Hosts need to be line seperated as in:
 Things that don't work
 
 ARGS:
-       query
-       database
-       port
        threads
-       VERBOSE
