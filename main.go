@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/b00stfr3ak/print"
 	_ "github.com/denisenkom/go-mssqldb"
+	"github.com/jamesbcook/print"
 )
 
 const (
