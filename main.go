@@ -77,7 +77,6 @@ func getServers(inputFile string) []string {
 func readyDir(dir string) {
 	err := os.Mkdir(dir, 0775)
 	if err != nil {
-		//fmt.Printf("%s Exists, would you like to remove it? ", dir)
 		print.Warningf("%s Exists, would you like to remove it? ", dir)
 		reader := bufio.NewReader(os.Stdin)
 		input, _ := reader.ReadString('\n')
